@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foto-tidsstempel (prototype)</title>
+<style>
+:root{--bg:#fff;--fg:#1c1c1e;--mut:#6b7280;--card:#f2f4f8;--acc:#1f3a5f;--ok:#17653a;--bad:#a12a2a}
+@media (prefers-color-scheme:dark){:root{--bg:#111418;--fg:#eceff4;--mut:#9aa4b2;--card:#1c222b;--acc:#7fb0ff;--ok:#6fd49a;--bad:#ff8a8a}}
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:16px/1.45 -apple-system,Helvetica,Arial,sans-serif;max-width:640px;margin:auto}
+h1{font-size:1.3rem;margin:.2em 0}h2{font-size:1.05rem;margin:0 0 .5em}
+.card{background:var(--card);border-radius:12px;padding:14px;margin:14px 0}
+.mut{color:var(--mut);font-size:.85rem}
+button,a.btn{display:inline-block;background:var(--acc);color:var(--bg);border:0;border-radius:10px;padding:11px 16px;font-size:1rem;margin:8px 8px 0 0;text-decoration:none}
+button:disabled{opacity:.4}
+input[type=file]{width:100%;margin:6px 0}
+code{word-break:break-all;font-size:.8rem;display:block;margin:6px 0}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+</style>
+</head>
+<body>
+<h1>Foto-tidsstempel</h1>
+<p class="mut">Prototype. Billedet forlader aldrig enheden. Kun hashen (et fingeraftryk) sendes til en OpenTimestamps-kalenderserver. Ikke testet mod live-servere.</p>
+
+<div class="card">
+<h2>1. Opret tidsstempel</h2>
+<input type="file" id="f1" accept="image/*,video/*,.heic,.pdf">
+<code id="h1"></code>
+<button id="go" disabled>Opret tidsstempel</button>
+<div id="out1"></div>
+</div>
+
+<div class="card">
+<h2>2. Kontrollér (modtagerens trin)</h2>
+<p class="mut">Vælg originalfilen og den tilhørende .ots-fil.</p>
+<input type="file" id="f2" accept="image/*,video/*,.heic,.pdf">
+<input type="file" id="f3" accept=".ots">
+<button id="chk" disabled>Kontrollér</button>
+<div id="out2"></div>
+</div>
+
+<p class="mut">Fuld kontrol mod Bitcoin-blockchainen: upload filen og .ots-filen på opentimestamps.org (Verify), eller brug kommandoen <code style="display:inline">ots verify</code>.</p>
+
+<script>
+const $=id=>document.getElementById(id);
+const hex=b=>[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
+const cat=(...a)=>{const o=new Uint8Array(a.reduce((n,x)=>n+x.length,0));let p=0;for(const x of a){o.set(x,p);p+=x.length}return o};
+const sha=async b=>new Uint8Array(await crypto.subtle.digest('SHA-256',b));
+const MAGIC=Uint8Array.of(0,0x4f,0x70,0x65,0x6e,0x54,0x69,0x6d,0x65,0x73,0x74,0x61,0x6d,0x70,0x73,0,0,0x50,0x72,0x6f,0x6f,0x66,0,0xbf,0x89,0xe2,0xe8,0x84,0xe8,0x92,0x94);
+const BTC=[0x05,0x88,0x96,0x0d,0x73,0xd7,0x19,0x01], PEND=[0x83,0xdf,0xe3,0x0d,0x2e,0xf9,0x0c,0x8e];
+const CALS=['https://alice.btc.calendar.opentimestamps.org','https://bob.btc.calendar.opentimestamps.org','https://finney.calendar.eternitywall.com'];
+let digest=null, file1=null;
+
+function show(el,html,cls){el.innerHTML='';const p=document.createElement('p');if(cls)p.className=cls;p.textContent=html;el.appendChild(p)}
+
+$('f1').onchange=async e=>{
+  file1=e.target.files[0];$('go').disabled=true;$('out1').innerHTML='';
+  if(!file1)return;
+  $('h1').textContent='Beregner hash...';
+  digest=await sha(await file1.arrayBuffer());
+  $('h1').textContent='SHA-256: '+hex(digest);
+  $('go').disabled=false;
+};
+
+$('go').onclick=async()=>{
+  const out=$('out1');$('go').disabled=true;show(out,'Kontakter kalenderserver...');
+  try{
+    const nonce=crypto.getRandomValues(new Uint8Array(16));
+    const root=await sha(cat(digest,nonce));
+    const tryCal=async u=>{
+      const c=new AbortController(),t=setTimeout(()=>c.abort(),15000);
+      try{
+        const r=await fetch(u+'/digest',{method:'POST',body:root,signal:c.signal,
+          headers:{'Accept':'application/vnd.opentimestamps.v1','Content-Type':'application/x-www-form-urlencoded'}});
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        return {u,frag:new Uint8Array(await r.arrayBuffer())};
+      }finally{clearTimeout(t)}
+    };
+    const res=await Promise.any(CALS.map(tryCal));
+    // .ots = magic + version 1 + SHA-256 op + hash + append(nonce) + SHA-256 + kalenderens svar
+    const ots=cat(MAGIC,Uint8Array.of(1,8),digest,Uint8Array.of(0xf0,16),nonce,Uint8Array.of(8),res.frag);
+    out.innerHTML='';
+    const p=document.createElement('p');p.className='ok';
+    p.textContent='Foreløbigt tidsstempel oprettet via '+res.u.replace('https://','')+' ('+new Date().toLocaleString('da-DK')+'). Gem .ots-filen sammen med originalen. Efter nogle timer skal den opgraderes (Upgrade på opentimestamps.org), før den kan kontrolleres uden kalenderserveren.';
+    out.appendChild(p);
+    const a=document.createElement('a');a.className='btn';a.textContent='Hent '+file1.name+'.ots';
+    a.href=URL.createObjectURL(new Blob([ots],{type:'application/octet-stream'}));a.download=file1.name+'.ots';
+    out.appendChild(a);
+  }catch(err){
+    show(out,'Kunne ikke oprette tidsstempel: '+(err.errors?err.errors.map(x=>x.message).join(', '):err.message)+'. Hashen ovenfor er stadig gyldig og kan noteres.','bad');
+  }
+  $('go').disabled=false;
+};
+
+const ready=()=>{$('chk').disabled=!($('f2').files[0]&&$('f3').files[0])};
+$('f2').onchange=ready;$('f3').onchange=ready;
+
+const find=(o,t)=>{for(let i=65;i<=o.length-t.length;i++){if(t.every((v,j)=>o[i+j]===v))return i}return -1};
+
+$('chk').onclick=async()=>{
+  const out=$('out2');show(out,'Kontrollerer...');
+  const h=await sha(await $('f2').files[0].arrayBuffer());
+  const o=new Uint8Array(await $('f3').files[0].arrayBuffer());
+  if(!MAGIC.every((v,i)=>o[i]===v))return show(out,'Ikke en gyldig .ots-fil.','bad');
+  if(o[31]!==1||o[32]!==8)return show(out,'Ukendt version eller hashtype (forventer SHA-256).','bad');
+  if(hex(o.slice(33,65))!==hex(h))return show(out,'Filens hash matcher IKKE .ots-filen. Filen er ændret, eller det er en anden fil.','bad');
+  let msg='Filens hash matcher .ots-filen ('+hex(h).slice(0,16)+'...). ';
+  const bi=find(o,BTC);
+  if(bi>=0){
+    let p=bi+9,sh=0,n=0;
+    while(p<o.length){const b=o[p++];n+=(b&0x7f)*Math.pow(2,sh);sh+=7;if(!(b&0x80))break}
+    msg+='Filen indeholder en Bitcoin-attestation for blok nr. '+n+'. Bekræft blokken på opentimestamps.org eller med ots verify.';
+  }else if(find(o,PEND)>=0){
+    msg+='Tidsstemplet er endnu kun foreløbigt (afventer Bitcoin). Opgradér det på opentimestamps.org, før det sendes videre.';
+  }else msg+='Ingen kendt attestation fundet.';
+  show(out,msg,bi>=0?'ok':'');
+};
+</script>
+</body>
+</html>
