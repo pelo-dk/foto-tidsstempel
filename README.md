@@ -1,1 +1,2 @@
 # foto-tidsstempel
+"Test"
