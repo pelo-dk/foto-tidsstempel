@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Foto-tidsstempel (prototype)</title>
+<title>Foto-tidsstempel v2 (prototype)</title>
 <style>
 :root{--bg:#fff;--fg:#1c1c1e;--mut:#6b7280;--card:#f2f4f8;--acc:#1f3a5f;--ok:#17653a;--bad:#a12a2a}
 @media (prefers-color-scheme:dark){:root{--bg:#111418;--fg:#eceff4;--mut:#9aa4b2;--card:#1c222b;--acc:#7fb0ff;--ok:#6fd49a;--bad:#ff8a8a}}
 *{box-sizing:border-box}
-body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:16px/1.45 -apple-system,Helvetica,Arial,sans-serif;max-width:640px;margin:auto}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:16px/1.45 -apple-system,Helvetica,Arial,sans-serif;max-width:680px;margin:auto}
 h1{font-size:1.3rem;margin:.2em 0}h2{font-size:1.05rem;margin:0 0 .5em}
 .card{background:var(--card);border-radius:12px;padding:14px;margin:14px 0}
 .mut{color:var(--mut);font-size:.85rem}
@@ -16,31 +16,47 @@ button,a.btn{display:inline-block;background:var(--acc);color:var(--bg);border:0
 button:disabled{opacity:.4}
 input[type=file]{width:100%;margin:6px 0}
 code{word-break:break-all;font-size:.8rem;display:block;margin:6px 0}
+pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:8px 0 0}
 .ok{color:var(--ok)}.bad{color:var(--bad)}
 </style>
 </head>
 <body>
-<h1>Foto-tidsstempel</h1>
-<p class="mut">Prototype. Billedet forlader aldrig enheden. Kun hashen (et fingeraftryk) sendes til en OpenTimestamps-kalenderserver. Ikke testet mod live-servere.</p>
+<h1>Foto-tidsstempel v2</h1>
+<p class="mut">Prototype. Filerne forlader aldrig enheden. Kun hashen (et fingeraftryk) sendes til en OpenTimestamps-kalenderserver.</p>
 
 <div class="card">
-<h2>1. Opret tidsstempel</h2>
-<input type="file" id="f1" accept="image/*,video/*,.heic,.pdf">
+<h2>1. Opret tidsstempel (én fil)</h2>
+<input type="file" id="f1">
 <code id="h1"></code>
 <button id="go" disabled>Opret tidsstempel</button>
 <div id="out1"></div>
 </div>
 
 <div class="card">
+<h2>1b. Mappe eller flere filer (PC)</h2>
+<p class="mut">Hver fil får sin egen kvittering, navngivet filnavn.ots. Undermapper medtages. Filer, der allerede har en .ots-fil, springes over. Filerne behandles én ad gangen.</p>
+<label><input type="checkbox" id="onlyMedia" checked> Kun billeder og PDF</label><br>
+<button id="dirBtn">Vælg mappe (gem .ots ved siden af filerne)</button>
+<p class="mut" id="dirNote">Kræver Chrome eller Edge på PC. Vælg en undermappe og ikke selve Dokumenter eller Overførsler, som browseren kan afvise.</p>
+<p class="mut">Alternativt som ZIP (alle browsere på PC):</p>
+<input type="file" id="fm" multiple>
+<input type="file" id="fd" webkitdirectory multiple>
+<button id="stopBtn" disabled>Stop</button>
+<div id="prog" class="mut"></div>
+<pre id="log"></pre>
+<div id="zipOut"></div>
+</div>
+
+<div class="card">
 <h2>2. Kontrollér (modtagerens trin)</h2>
 <p class="mut">Vælg originalfilen og den tilhørende .ots-fil.</p>
-<input type="file" id="f2" accept="image/*,video/*,.heic,.pdf">
+<input type="file" id="f2">
 <input type="file" id="f3" accept=".ots">
 <button id="chk" disabled>Kontrollér</button>
 <div id="out2"></div>
 </div>
 
-<p class="mut">Fuld kontrol mod Bitcoin-blockchainen: upload filen og .ots-filen på opentimestamps.org (Verify), eller brug kommandoen <code style="display:inline">ots verify</code>.</p>
+<p class="mut">Opgradering og fuld kontrol mod Bitcoin sker på opentimestamps.org (Stamp &amp; Verify: vælg .ots-filen først og derefter originalen) eller med kommandoen <code style="display:inline">ots upgrade</code> og <code style="display:inline">ots verify</code>.</p>
 
 <script>
 const $=id=>document.getElementById(id);
@@ -50,10 +66,28 @@ const sha=async b=>new Uint8Array(await crypto.subtle.digest('SHA-256',b));
 const MAGIC=Uint8Array.of(0,0x4f,0x70,0x65,0x6e,0x54,0x69,0x6d,0x65,0x73,0x74,0x61,0x6d,0x70,0x73,0,0,0x50,0x72,0x6f,0x6f,0x66,0,0xbf,0x89,0xe2,0xe8,0x84,0xe8,0x92,0x94);
 const BTC=[0x05,0x88,0x96,0x0d,0x73,0xd7,0x19,0x01], PEND=[0x83,0xdf,0xe3,0x0d,0x2e,0xf9,0x0c,0x8e];
 const CALS=['https://alice.btc.calendar.opentimestamps.org','https://bob.btc.calendar.opentimestamps.org','https://finney.calendar.eternitywall.com'];
-let digest=null, file1=null;
+const err2txt=e=>e.errors?e.errors.map(x=>x.message).join(', '):e.message;
+function show(el,t,cls){el.innerHTML='';const p=document.createElement('p');if(cls)p.className=cls;p.textContent=t;el.appendChild(p)}
 
-function show(el,html,cls){el.innerHTML='';const p=document.createElement('p');if(cls)p.className=cls;p.textContent=html;el.appendChild(p)}
+/* Opretter kvittering: .ots = magic + version 1 + SHA-256 + hash + append(nonce) + SHA-256 + kalenderens svar */
+async function stampDigest(digest){
+  const nonce=crypto.getRandomValues(new Uint8Array(16));
+  const root=await sha(cat(digest,nonce));
+  const tryCal=async u=>{
+    const c=new AbortController(),t=setTimeout(()=>c.abort(),15000);
+    try{
+      const r=await fetch(u+'/digest',{method:'POST',body:root,signal:c.signal,
+        headers:{'Accept':'application/vnd.opentimestamps.v1','Content-Type':'application/x-www-form-urlencoded'}});
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      return {u,frag:new Uint8Array(await r.arrayBuffer())};
+    }finally{clearTimeout(t)}
+  };
+  const res=await Promise.any(CALS.map(tryCal));
+  return {ots:cat(MAGIC,Uint8Array.of(1,8),digest,Uint8Array.of(0xf0,16),nonce,Uint8Array.of(8),res.frag),cal:res.u.replace('https://','')};
+}
 
+/* ---- Én fil ---- */
+let digest=null,file1=null;
 $('f1').onchange=async e=>{
   file1=e.target.files[0];$('go').disabled=true;$('out1').innerHTML='';
   if(!file1)return;
@@ -62,42 +96,104 @@ $('f1').onchange=async e=>{
   $('h1').textContent='SHA-256: '+hex(digest);
   $('go').disabled=false;
 };
-
 $('go').onclick=async()=>{
   const out=$('out1');$('go').disabled=true;show(out,'Kontakter kalenderserver...');
   try{
-    const nonce=crypto.getRandomValues(new Uint8Array(16));
-    const root=await sha(cat(digest,nonce));
-    const tryCal=async u=>{
-      const c=new AbortController(),t=setTimeout(()=>c.abort(),15000);
-      try{
-        const r=await fetch(u+'/digest',{method:'POST',body:root,signal:c.signal,
-          headers:{'Accept':'application/vnd.opentimestamps.v1','Content-Type':'application/x-www-form-urlencoded'}});
-        if(!r.ok)throw new Error('HTTP '+r.status);
-        return {u,frag:new Uint8Array(await r.arrayBuffer())};
-      }finally{clearTimeout(t)}
-    };
-    const res=await Promise.any(CALS.map(tryCal));
-    // .ots = magic + version 1 + SHA-256 op + hash + append(nonce) + SHA-256 + kalenderens svar
-    const ots=cat(MAGIC,Uint8Array.of(1,8),digest,Uint8Array.of(0xf0,16),nonce,Uint8Array.of(8),res.frag);
+    const r=await stampDigest(digest);
     out.innerHTML='';
     const p=document.createElement('p');p.className='ok';
-    p.textContent='Foreløbigt tidsstempel oprettet via '+res.u.replace('https://','')+' ('+new Date().toLocaleString('da-DK')+'). Gem .ots-filen sammen med originalen. Efter nogle timer skal den opgraderes (Upgrade på opentimestamps.org), før den kan kontrolleres uden kalenderserveren.';
+    p.textContent='Foreløbigt tidsstempel oprettet via '+r.cal+' ('+new Date().toLocaleString('da-DK')+'). Gem .ots-filen sammen med originalen. Efter nogle timer skal den opgraderes, før den kan kontrolleres uden kalenderserveren.';
     out.appendChild(p);
     const a=document.createElement('a');a.className='btn';a.textContent='Hent '+file1.name+'.ots';
-    a.href=URL.createObjectURL(new Blob([ots],{type:'application/octet-stream'}));a.download=file1.name+'.ots';
+    a.href=URL.createObjectURL(new Blob([r.ots],{type:'application/octet-stream'}));a.download=file1.name+'.ots';
     out.appendChild(a);
-  }catch(err){
-    show(out,'Kunne ikke oprette tidsstempel: '+(err.errors?err.errors.map(x=>x.message).join(', '):err.message)+'. Hashen ovenfor er stadig gyldig og kan noteres.','bad');
-  }
+  }catch(err){show(out,'Kunne ikke oprette tidsstempel: '+err2txt(err)+'. Hashen ovenfor er stadig gyldig.','bad')}
   $('go').disabled=false;
 };
 
+/* ---- Mappe / flere filer ---- */
+/*ZIP*/
+const crcT=(()=>{const t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+const crc=b=>{let c=-1;for(let i=0;i<b.length;i++)c=crcT[(c^b[i])&255]^(c>>>8);return (c^-1)>>>0};
+function zip(files){
+  const enc=new TextEncoder(),parts=[],cd=[];let off=0;
+  const u16=n=>Uint8Array.of(n&255,(n>>8)&255),u32=n=>Uint8Array.of(n&255,(n>>8)&255,(n>>16)&255,(n>>>24)&255);
+  for(const f of files){
+    const nm=enc.encode(f.name),c=crc(f.data),sz=f.data.length;
+    const lh=cat(u32(0x04034b50),u16(20),u16(0x0800),u16(0),u16(0),u16(0x21),u32(c),u32(sz),u32(sz),u16(nm.length),u16(0),nm);
+    parts.push(lh,f.data);
+    cd.push(cat(u32(0x02014b50),u16(20),u16(20),u16(0x0800),u16(0),u16(0),u16(0x21),u32(c),u32(sz),u32(sz),u16(nm.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(off),nm));
+    off+=lh.length+sz;
+  }
+  const cds=cat(...cd);
+  return cat(...parts,cds,cat(u32(0x06054b50),u16(0),u16(0),u16(files.length),u16(files.length),u32(cds.length),u32(off),u16(0)));
+}
+/*ENDZIP*/
+const MEDIA=/\.(jpe?g|heic|heif|png|tiff?|gif|webp|dng|pdf)$/i,MAXB=1e9;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const tsn=()=>new Date().toISOString().replace(/[-:T]/g,'').slice(0,14);
+const csv=rs=>'\ufeff'+['sti;størrelse;sha256;tidspunkt;kalender;status',...rs.map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(';'))].join('\r\n');
+let stopFlag=false;
+const say=t=>{$('log').textContent+=t+'\n';$('log').scrollTop=$('log').scrollHeight};
+const busy=b=>{['dirBtn','fm','fd'].forEach(i=>$(i).disabled=b);$('stopBtn').disabled=!b};
+$('stopBtn').onclick=()=>{stopFlag=true};
+
+async function run(items,zipMode){
+  stopFlag=false;$('log').textContent='';$('zipOut').innerHTML='';busy(true);
+  const rows=[],zf=[];let seen=0,ok=0,skip=0,bad=0;
+  for await(const it of items){
+    if(stopFlag){say('Stoppet af brugeren.');break}
+    if(/\.ots$/i.test(it.path)||($('onlyMedia').checked&&!MEDIA.test(it.path)))continue;
+    seen++;$('prog').textContent='Behandler fil nr. '+seen+': '+it.path;
+    try{
+      if(!zipMode&&await it.exists()){skip++;say('Sprunget over (har .ots): '+it.path);continue}
+      const f=await it.file();
+      if(f.size>MAXB){skip++;say('Sprunget over (over 1 GB): '+it.path);continue}
+      const d=await sha(await f.arrayBuffer());
+      const r=await stampDigest(d);
+      if(zipMode)zf.push({name:it.path+'.ots',data:r.ots});else await it.write(r.ots);
+      ok++;rows.push([it.path,f.size,hex(d),new Date().toISOString(),r.cal,'OK']);say('OK: '+it.path);
+      await sleep(300);
+    }catch(e){bad++;rows.push([it.path,'','','','','FEJL: '+err2txt(e)]);say('FEJL: '+it.path+' ('+err2txt(e)+')')}
+  }
+  $('prog').textContent='Færdig: '+ok+' tidsstemplet, '+skip+' sprunget over, '+bad+' fejl.';
+  busy(false);
+  return {rows,zf};
+}
+
+if(!window.showDirectoryPicker){$('dirBtn').style.display='none';$('dirNote').textContent='Din browser kan ikke gemme direkte i mapper. Brug ZIP-valgene nedenfor.'}
+$('dirBtn').onclick=async()=>{
+  let root;try{root=await showDirectoryPicker({mode:'readwrite'})}catch(e){return}
+  async function* walk(d,p=''){
+    for await(const [nm,h] of d.entries()){
+      if(h.kind==='directory')yield* walk(h,p+nm+'/');
+      else yield {path:p+nm,file:()=>h.getFile(),
+        exists:async()=>{try{await d.getFileHandle(nm+'.ots');return true}catch(e){return false}},
+        write:async b=>{const w=await(await d.getFileHandle(nm+'.ots',{create:true})).createWritable();await w.write(b);await w.close()}};
+    }
+  }
+  const res=await run(walk(root),false);
+  if(res.rows.length){
+    try{const w=await(await root.getFileHandle('tidsstempel-log-'+tsn()+'.csv',{create:true})).createWritable();await w.write(csv(res.rows));await w.close();say('Log gemt i mappen.')}
+    catch(e){say('Kunne ikke gemme log: '+e.message)}
+  }
+};
+async function* fromList(fl){for(const f of fl)yield {path:f.webkitRelativePath||f.name,file:async()=>f}}
+async function zipRun(fl){
+  const res=await run(fromList(fl),true);
+  if(!res.rows.length)return;
+  const files=[...res.zf,{name:'tidsstempel-log.csv',data:new TextEncoder().encode(csv(res.rows))}];
+  const a=document.createElement('a');a.className='btn';a.textContent='Hent ZIP ('+res.zf.length+' .ots-filer og log)';
+  a.href=URL.createObjectURL(new Blob([zip(files)],{type:'application/zip'}));a.download='tidsstempel-'+tsn()+'.zip';
+  $('zipOut').appendChild(a);
+}
+$('fm').onchange=e=>zipRun([...e.target.files]);
+$('fd').onchange=e=>zipRun([...e.target.files]);
+
+/* ---- Kontrol ---- */
 const ready=()=>{$('chk').disabled=!($('f2').files[0]&&$('f3').files[0])};
 $('f2').onchange=ready;$('f3').onchange=ready;
-
 const find=(o,t)=>{for(let i=65;i<=o.length-t.length;i++){if(t.every((v,j)=>o[i+j]===v))return i}return -1};
-
 $('chk').onclick=async()=>{
   const out=$('out2');show(out,'Kontrollerer...');
   const h=await sha(await $('f2').files[0].arrayBuffer());
