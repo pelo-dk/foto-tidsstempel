@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Foto-tidsstempel v3 (prototype)</title>
+<title>Foto-tidsstempel v4 (prototype)</title>
 <style>
 :root{--bg:#fff;--fg:#1c1c1e;--mut:#6b7280;--card:#f2f4f8;--acc:#1f3a5f;--ok:#17653a;--bad:#a12a2a}
 @media (prefers-color-scheme:dark){:root{--bg:#111418;--fg:#eceff4;--mut:#9aa4b2;--card:#1c222b;--acc:#7fb0ff;--ok:#6fd49a;--bad:#ff8a8a}}
@@ -21,7 +21,7 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 </style>
 </head>
 <body>
-<h1>Foto-tidsstempel v3</h1>
+<h1>Foto-tidsstempel v4</h1>
 <p class="mut">Prototype. Filerne forlader aldrig enheden. Kun hashen (et fingeraftryk) sendes til en OpenTimestamps-kalenderserver.</p>
 
 <div class="card">
@@ -66,7 +66,20 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 <div id="out3"></div>
 </div>
 
-<p class="mut">Opgradering og fuld kontrol mod Bitcoin sker på opentimestamps.org (Stamp &amp; Verify: vælg .ots-filen først og derefter originalen) eller med kommandoen <code style="display:inline">ots upgrade</code> og <code style="display:inline">ots verify</code>.</p>
+<div class="card" id="c4">
+<h2>4. Opgradér mappe til Bitcoin (PC)</h2>
+<p class="mut">Spørger kalenderserveren om hver foreløbig .ots-fil og gemmer den færdige som filnavn.ots. Den foreløbige flyttes til undermappen _foreløbige. Intet overskrives. Kræver Chrome eller Edge.</p>
+<button id="wBtn">Vælg arbejdsmappe</button> <span id="wName" class="mut"></span><br>
+<button id="cBtn">Vælg kopimappe (valgfri)</button> <span id="cName" class="mut"></span><br>
+<label><input type="checkbox" id="dry" checked> Prøvekørsel (skriv ingen filer)</label><br>
+<button id="upBtn" disabled>Opgradér</button>
+<button id="stop4" disabled>Stop</button>
+<div id="prog4" class="mut"></div>
+<pre id="log4"></pre>
+<div id="out4"></div>
+</div>
+
+<p class="mut">Selve Bitcoin-blokken bekræftes på opentimestamps.org (Stamp &amp; Verify: vælg .ots-filen først og derefter originalen) eller med <code style="display:inline">ots verify</code>.</p>
 
 <script>
 const $=id=>document.getElementById(id);
@@ -237,7 +250,7 @@ $('fv').onchange=async e=>{
   const map=new Map(fl.map(f=>[f.webkitRelativePath||f.name,f]));
   const pairs=[],noOts=[],orphan=[];
   for(const p of map.keys()){
-    if(/\.ots$/i.test(p)){if(!map.has(p.slice(0,-4)))orphan.push(p);continue}
+    if(/\.ots$/i.test(p)){if(!/(^|\/)_foreløbige\//.test(p)&&!map.has(p.slice(0,-4)))orphan.push(p);continue}
     if(map.has(p+'.ots'))pairs.push(p);else if(MEDIA.test(p))noOts.push(p);
   }
   const rows=[],cnt={bitcoin:0,'foreløbig':0,'matcher ikke':0,other:0,skip:0};let i=0;
@@ -264,6 +277,142 @@ $('fv').onchange=async e=>{
   $('fv').disabled=false;$('stop3').disabled=true;$('fv').value='';
 };
 const csv3=rs=>'\ufeff'+['sti;status;blok;bemærkning',...rs.map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(';'))].join('\r\n');
+
+/*UPG*/
+const BTCT='0588960d73d71901',PENDT='83dfe30d2ef90c8e';
+const HOSTS=['alice.btc.calendar.opentimestamps.org','bob.btc.calendar.opentimestamps.org','finney.calendar.eternitywall.com','btc.calendar.catallaxy.com'];
+const rdVar=(o,p)=>{let n=0,s=1;for(;;){const b=o[p++];if(b===undefined)throw new Error('uventet slut');n+=(b&127)*s;s*=128;if(!(b&128))break}return [n,p]};
+function parseTS(o,p,atts,d=0){
+  if(d>3000)throw new Error('for dyb kvittering');
+  for(;;){
+    let t=o[p++];if(t===undefined)throw new Error('uventet slut');
+    const more=t===0xff;if(more)t=o[p++];
+    if(t===0x00){const tag=hex(o.slice(p,p+8));p+=8;const [n,q]=rdVar(o,p);atts.push({tag,data:o.slice(q,q+n)});p=q+n}
+    else{
+      if(t===0xf0||t===0xf1){const [n,q]=rdVar(o,p);p=q+n}
+      else if(![0x02,0x03,0x08,0x67,0xf2,0xf3].includes(t))throw new Error('ukendt operation '+t);
+      p=parseTS(o,p,atts,d+1);
+    }
+    if(!more)return p;
+  }
+}
+/* Finder den afventende attestation i en lineær kvittering og beregner beskeden (commitment) dér */
+async function chain(o){
+  let p=65,msg=o.slice(33,65);
+  for(;;){
+    const t=o[p];if(t===undefined)throw new Error('uventet slut');
+    if(t===0xff)throw new Error('forgrenet kvittering (brug opentimestamps.org)');
+    if(t===0x00){
+      const tag=hex(o.slice(p+1,p+9)),[n,q]=rdVar(o,p+9),data=o.slice(q,q+n);
+      if(tag===BTCT)return {btc:true};
+      if(tag!==PENDT)throw new Error('ukendt attestation');
+      if(q+n!==o.length)throw new Error('flere grene i kvitteringen');
+      const [ul,uq]=rdVar(data,0);
+      return {pos:p,msg,uri:new TextDecoder().decode(data.slice(uq,uq+ul))};
+    }
+    p++;
+    if(t===0x08)msg=await sha(msg);
+    else if(t===0xf0||t===0xf1){const [n,q]=rdVar(o,p),a=o.slice(q,q+n);p=q+n;msg=t===0xf0?cat(msg,a):cat(a,msg)}
+    else throw new Error('ukendt operation '+t);
+  }
+}
+async function upgradeOts(old){
+  const c=await chain(old);
+  if(c.btc)return {state:'already'};
+  const u=new URL(c.uri);
+  if(u.protocol!=='https:'||!HOSTS.includes(u.hostname))throw new Error('ukendt kalenderserver: '+u.hostname);
+  const ac=new AbortController(),t=setTimeout(()=>ac.abort(),20000);
+  let r;try{r=await fetch(u.origin+'/timestamp/'+hex(c.msg),{headers:{'Accept':'application/vnd.opentimestamps.v1'},signal:ac.signal})}finally{clearTimeout(t)}
+  if(r.status===404)return {state:'pending'};
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  const nu=cat(old.slice(0,c.pos),new Uint8Array(await r.arrayBuffer()));
+  const atts=[];
+  if(parseTS(nu,65,atts)!==nu.length)throw new Error('svaret kunne ikke indpasses');
+  const bt=atts.filter(a=>a.tag===BTCT);
+  if(!bt.length)return {state:'pending'};
+  if(nu.length<=old.length)throw new Error('den nye fil er ikke større end den foreløbige');
+  return {state:'done',bytes:nu,block:rdVar(bt[0].data,0)[0]};
+}
+const exists=async(d,n)=>{try{await d.getFileHandle(n);return true}catch(e){return false}};
+const readB=async(d,n)=>new Uint8Array(await(await(await d.getFileHandle(n)).getFile()).arrayBuffer());
+async function writeNew(d,n,b){
+  if(await exists(d,n))throw new Error('findes allerede: '+n);
+  const w=await(await d.getFileHandle(n,{create:true})).createWritable();await w.write(b);await w.close();
+}
+async function uniq(d,n){
+  if(!await exists(d,n))return n;
+  const k=n.lastIndexOf('.'),b=n.slice(0,k),e=n.slice(k);
+  for(let i=2;i<1000;i++){if(!await exists(d,b+'.'+i+e))return b+'.'+i+e}
+  throw new Error('intet ledigt filnavn');
+}
+/* Flytter en eksisterende foreløbig fil til _foreløbige (bekræftet kopi) og skriver den nye. Overskriver aldrig. */
+async function replaceOts(dir,name,nb){
+  let old=null;
+  if(await exists(dir,name)){
+    old=await readB(dir,name);
+    const ar=await dir.getDirectoryHandle('_foreløbige',{create:true}),an=await uniq(ar,name);
+    await writeNew(ar,an,old);
+    if(hex(await readB(ar,an))!==hex(old))throw new Error('sikkerhedskopien kunne ikke bekræftes');
+    await dir.removeEntry(name);
+  }
+  try{await writeNew(dir,name,nb)}catch(e){if(old)await writeNew(dir,name,old);throw e}
+}
+/*ENDUPG*/
+async function collect(d,p,out){
+  const names=new Set(),subs=[];
+  for await(const [nm,h] of d.entries()){if(h.kind==='directory'){if(nm!=='_foreløbige')subs.push([nm,h])}else names.add(nm)}
+  for(const nm of names){if(!/\.ots$/i.test(nm)&&names.has(nm+'.ots'))out.push({dir:d,name:nm,path:p+nm})}
+  for(const [nm,h] of subs)await collect(h,p+nm+'/',out);
+}
+async function dirAt(root,path){let d=root;for(const s of path.split('/').slice(0,-1))d=await d.getDirectoryHandle(s);return d}
+const csv4=rs=>'\ufeff'+['sti;status;blok;størrelse før og efter;kopimappe;bemærkning',...rs.map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(';'))].join('\r\n');
+let workDir=null,copyDir=null,stop4=false;
+if(!window.showDirectoryPicker)$('c4').style.display='none';
+$('wBtn').onclick=async()=>{try{workDir=await showDirectoryPicker({mode:'readwrite'});$('wName').textContent=workDir.name;$('upBtn').disabled=false}catch(e){}};
+$('cBtn').onclick=async()=>{try{copyDir=await showDirectoryPicker({mode:'readwrite'});$('cName').textContent=copyDir.name}catch(e){}};
+$('stop4').onclick=()=>{stop4=true};
+$('upBtn').onclick=async()=>{
+  stop4=false;const dry=$('dry').checked;$('log4').textContent='';$('out4').innerHTML='';
+  ['wBtn','cBtn','upBtn'].forEach(i=>$(i).disabled=true);$('stop4').disabled=false;
+  const say=t=>{$('log4').textContent+=t+'\n';$('log4').scrollTop=$('log4').scrollHeight};
+  const rows=[],cnt={done:0,pend:0,already:0,bad:0},items=[];let i=0;
+  try{await collect(workDir,'',items)}catch(e){say('Kunne ikke læse mappen: '+e.message)}
+  for(const it of items){
+    if(stop4){say('Stoppet af brugeren.');break}
+    i++;$('prog4').textContent='Fil '+i+' af '+items.length+': '+it.path;
+    let row=[it.path,'','','','',''];
+    try{
+      const old=await readB(it.dir,it.name+'.ots');
+      const wf=await(await it.dir.getFileHandle(it.name)).getFile();
+      if(wf.size>MAXB)throw new Error('over 1 GB');
+      const h=await sha(await wf.arrayBuffer());
+      if(hex(old.slice(33,65))!==hex(h))throw new Error('originalen matcher ikke .ots-filen');
+      const r=await upgradeOts(old);
+      if(r.state==='already'){cnt.already++;row[1]='allerede opgraderet';say('Allerede opgraderet: '+it.path)}
+      else if(r.state==='pending'){cnt.pend++;row[1]='stadig foreløbig';say('Stadig foreløbig: '+it.path)}
+      else{
+        let cd=null,cm='';
+        if(copyDir){try{cd=await dirAt(copyDir,it.path);const cf=await(await cd.getFileHandle(it.name)).getFile();
+          if(hex(await sha(await cf.arrayBuffer()))!==hex(h)){cd=null;cm='kopien afviger, ingen .ots skrevet dér'}}
+          catch(e){cd=null;cm='findes ikke i kopimappen'}}
+        if(dry){if(cd)cm='ville skrive i kopimappen'}
+        else{await replaceOts(it.dir,it.name+'.ots',r.bytes);
+          if(cd){try{await replaceOts(cd,it.name+'.ots',r.bytes);cm='skrevet i kopimappen'}catch(e){cm='kopimappe: '+e.message}}}
+        cnt.done++;row=[it.path,dry?'ville opgradere':'opgraderet',r.block,old.length+' til '+r.bytes.length,cm,''];
+        say((dry?'VILLE OPGRADERE':'OPGRADERET')+' (blok '+r.block+'): '+it.path+(cm?' ['+cm+']':''));
+      }
+    }catch(e){cnt.bad++;row[1]='afvist eller fejl';row[5]=err2txt(e);say('AFVIST ELLER FEJL: '+it.path+' ('+err2txt(e)+')')}
+    rows.push(row);await sleep(300);
+  }
+  $('prog4').textContent='';
+  show($('out4'),(dry?'Prøvekørsel. ':'')+i+' filer behandlet: '+cnt.done+(dry?' kunne opgraderes':' opgraderet')+', '+cnt.pend+' stadig foreløbige, '+cnt.already+' allerede opgraderet, '+cnt.bad+' afvist eller fejl.'+(dry?' Fjern fluebenet og kør igen for at skrive filerne.':''),cnt.bad?'bad':'ok');
+  if(rows.length){
+    const a=document.createElement('a');a.className='btn';a.textContent='Hent log (CSV)';
+    a.href=URL.createObjectURL(new Blob([csv4(rows)],{type:'text/csv'}));a.download='opgradering-log-'+tsn()+'.csv';$('out4').appendChild(a);
+    if(!dry){try{await writeNew(workDir,await uniq(workDir,'opgradering-log-'+tsn()+'.csv'),new TextEncoder().encode(csv4(rows)))}catch(e){say('Kunne ikke gemme log i mappen: '+e.message)}}
+  }
+  ['wBtn','cBtn','upBtn'].forEach(i=>$(i).disabled=false);$('stop4').disabled=true;
+};
 </script>
 </body>
 </html>
