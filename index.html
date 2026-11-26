@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Foto-tidsstempel v5 (prototype)</title>
+<title>Foto-tidsstempel v5.1 (prototype)</title>
 <style>
 :root{--bg:#fff;--fg:#1c1c1e;--mut:#6b7280;--card:#f2f4f8;--acc:#1f3a5f;--ok:#17653a;--bad:#a12a2a}
 @media (prefers-color-scheme:dark){:root{--bg:#111418;--fg:#eceff4;--mut:#9aa4b2;--card:#1c222b;--acc:#7fb0ff;--ok:#6fd49a;--bad:#ff8a8a}}
@@ -21,7 +21,7 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 </style>
 </head>
 <body>
-<h1>Foto-tidsstempel v5</h1>
+<h1>Foto-tidsstempel v5.1</h1>
 <p class="mut">Prototype. Filerne forlader aldrig enheden. Kun hashen (et fingeraftryk) sendes til en OpenTimestamps-kalenderserver.</p>
 
 <div class="card">
@@ -336,8 +336,15 @@ async function upgradeOts(old){
   if(c.btc)return {state:'already'};
   const u=new URL(c.uri);
   if(u.protocol!=='https:'||!HOSTS.includes(u.hostname))throw new Error('ukendt kalenderserver: '+u.hostname);
-  const ac=new AbortController(),t=setTimeout(()=>ac.abort(),20000);
-  let r;try{r=await fetch(u.origin+'/timestamp/'+hex(c.msg),{headers:{'Accept':'application/vnd.opentimestamps.v1'},signal:ac.signal})}finally{clearTimeout(t)}
+  const url=u.origin+'/timestamp/'+hex(c.msg),ac=new AbortController(),t=setTimeout(()=>ac.abort(),20000);
+  let r;
+  try{r=await fetch(url,{headers:{'Accept':'application/vnd.opentimestamps.v1'},signal:ac.signal})}
+  catch(e){
+    /* Browseren må ikke læse svaret (fx 404 uden CORS-tilladelse). Tjek, om serveren overhovedet svarer. */
+    const ac2=new AbortController(),t2=setTimeout(()=>ac2.abort(),10000);
+    try{await fetch(url,{mode:'no-cors',signal:ac2.signal})}catch(e2){throw new Error('ingen forbindelse til kalenderserveren')}finally{clearTimeout(t2)}
+    return {state:'pending',presumed:true};
+  }finally{clearTimeout(t)}
   if(r.status===404)return {state:'pending'};
   if(!r.ok)throw new Error('HTTP '+r.status);
   const nu=cat(old.slice(0,c.pos),new Uint8Array(await r.arrayBuffer()));
@@ -404,7 +411,7 @@ $('upBtn').onclick=async()=>{
       if(hex(old.slice(33,65))!==hex(h))throw new Error('originalen matcher ikke .ots-filen');
       const r=await upgradeOts(old);
       if(r.state==='already'){cnt.already++;row[1]='allerede opgraderet';say('Allerede opgraderet: '+it.path)}
-      else if(r.state==='pending'){cnt.pend++;row[1]='stadig foreløbig';say('Stadig foreløbig: '+it.path)}
+      else if(r.state==='pending'){cnt.pend++;const pz=r.presumed?' (formodet: serveren svarer, men browseren må ikke læse svaret)':'';row[1]='stadig foreløbig'+(r.presumed?' (formodet)':'');say('Stadig foreløbig'+pz+': '+it.path)}
       else{
         let cd=null,cm='';
         if(copyDir){try{cd=await dirAt(copyDir,it.path);const cf=await(await cd.getFileHandle(it.name)).getFile();
@@ -420,7 +427,7 @@ $('upBtn').onclick=async()=>{
     rows.push(row);await sleep(300);
   }
   $('prog4').textContent='';
-  show($('out4'),(dry?'Prøvekørsel. ':'')+i+' filer behandlet: '+cnt.done+(dry?' kunne opgraderes':' opgraderet')+', '+cnt.pend+' stadig foreløbige, '+cnt.already+' allerede opgraderet, '+cnt.bad+' afvist eller fejl.'+(dry?' Fjern fluebenet og kør igen for at skrive filerne.':''),cnt.bad?'bad':'ok');
+  show($('out4'),(dry?'Prøvekørsel. ':'')+i+' filer behandlet: '+cnt.done+(dry?' kunne opgraderes':' opgraderet')+', '+cnt.pend+' stadig foreløbige, '+cnt.already+' allerede opgraderet, '+cnt.bad+' afvist eller fejl.'+(cnt.pend?' Nyligt stemplede filer er normalt først klar efter under en time til et døgn.':'')+(dry?' Fjern fluebenet og kør igen for at skrive filerne.':''),cnt.bad?'bad':'ok');
   if(rows.length){
     const a=document.createElement('a');a.className='btn';a.textContent='Hent log (CSV)';
     a.href=URL.createObjectURL(new Blob([csv4(rows)],{type:'text/csv'}));a.download='opgradering-log-'+tsn()+'.csv';$('out4').appendChild(a);
