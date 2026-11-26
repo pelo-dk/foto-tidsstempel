@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Foto-tidsstempel v4 (prototype)</title>
+<title>Foto-tidsstempel v5 (prototype)</title>
 <style>
 :root{--bg:#fff;--fg:#1c1c1e;--mut:#6b7280;--card:#f2f4f8;--acc:#1f3a5f;--ok:#17653a;--bad:#a12a2a}
 @media (prefers-color-scheme:dark){:root{--bg:#111418;--fg:#eceff4;--mut:#9aa4b2;--card:#1c222b;--acc:#7fb0ff;--ok:#6fd49a;--bad:#ff8a8a}}
@@ -21,7 +21,7 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 </style>
 </head>
 <body>
-<h1>Foto-tidsstempel v4</h1>
+<h1>Foto-tidsstempel v5</h1>
 <p class="mut">Prototype. Filerne forlader aldrig enheden. Kun hashen (et fingeraftryk) sendes til en OpenTimestamps-kalenderserver.</p>
 
 <div class="card">
@@ -35,9 +35,9 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 <div class="card">
 <h2>1b. Mappe eller flere filer (PC)</h2>
 <p class="mut">Hver fil får sin egen kvittering, navngivet filnavn.ots. Undermapper medtages. Filer, der allerede har en .ots-fil, springes over. Filerne behandles én ad gangen.</p>
-<label><input type="checkbox" id="onlyMedia" checked> Kun billeder og PDF</label><br>
+<label><input type="checkbox" id="onlyMedia" checked> Kun billeder og PDF (fjern fluebenet for alle filer)</label><br>
 <button id="dirBtn">Vælg mappe (gem .ots ved siden af filerne)</button>
-<p class="mut" id="dirNote">Kræver Chrome eller Edge på PC. Vælg en undermappe og ikke selve Dokumenter eller Overførsler, som browseren kan afvise.</p>
+<p class="mut" id="dirNote">Kræver en Chromium-baseret browser på PC (Chrome, Edge, Avast Secure Browser m.fl.). Vælg en undermappe og ikke selve Dokumenter eller Overførsler, som browseren kan afvise.</p>
 <p class="mut">Alternativt som ZIP (alle browsere på PC):</p>
 <input type="file" id="fm" multiple>
 <input type="file" id="fd" webkitdirectory multiple>
@@ -68,7 +68,7 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 
 <div class="card" id="c4">
 <h2>4. Opgradér mappe til Bitcoin (PC)</h2>
-<p class="mut">Spørger kalenderserveren om hver foreløbig .ots-fil og gemmer den færdige som filnavn.ots. Den foreløbige flyttes til undermappen _foreløbige. Intet overskrives. Kræver Chrome eller Edge.</p>
+<p class="mut">Spørger kalenderserveren om hver foreløbig .ots-fil og gemmer den færdige som filnavn.ots. Den foreløbige flyttes til undermappen _foreløbige. Intet overskrives. Kræver en Chromium-baseret browser.</p>
 <button id="wBtn">Vælg arbejdsmappe</button> <span id="wName" class="mut"></span><br>
 <button id="cBtn">Vælg kopimappe (valgfri)</button> <span id="cName" class="mut"></span><br>
 <label><input type="checkbox" id="dry" checked> Prøvekørsel (skriv ingen filer)</label><br>
@@ -77,6 +77,19 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 <div id="prog4" class="mut"></div>
 <pre id="log4"></pre>
 <div id="out4"></div>
+</div>
+
+<div class="card" id="c5">
+<h2>5. Bevispakker (PC)</h2>
+<p class="mut">Laver en mappe pr. opgraderet fil i en tredje mappe: en kontrolleret kopi af originalen, den opgraderede .ots og BEVIS.txt med blokhøjde og tid (slået op på mempool.space). Programmet kontrollerer også, at beviset passer til blokkens merkle root. Intet flyttes eller overskrives.</p>
+<button id="pwBtn">Vælg arbejdsmappe</button> <span id="pwName" class="mut"></span><br>
+<button id="ppBtn">Vælg pakkemappe</button> <span id="ppName" class="mut"></span><br>
+<label><input type="checkbox" id="dry5" checked> Prøvekørsel (skriv ingen filer)</label><br>
+<button id="pkBtn" disabled>Lav pakker</button>
+<button id="stop5" disabled>Stop</button>
+<div id="prog5" class="mut"></div>
+<pre id="log5"></pre>
+<div id="out5"></div>
 </div>
 
 <p class="mut">Selve Bitcoin-blokken bekræftes på opentimestamps.org (Stamp &amp; Verify: vælg .ots-filen først og derefter originalen) eller med <code style="display:inline">ots verify</code>.</p>
@@ -152,6 +165,7 @@ function zip(files){
   return cat(...parts,cds,cat(u32(0x06054b50),u16(0),u16(0),u16(files.length),u16(files.length),u32(cds.length),u32(off),u16(0)));
 }
 /*ENDZIP*/
+const SKIPN=/(^|\/)(_foreløbige\/|BEVIS\.txt$|(tidsstempel|opgradering|kontrol|pakke)-log-[^\/]*\.csv$)|\.ots$/i;
 const MEDIA=/\.(jpe?g|heic|heif|png|tiff?|gif|webp|dng|pdf)$/i,MAXB=1e9;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const tsn=()=>new Date().toISOString().replace(/[-:T]/g,'').slice(0,14);
@@ -163,10 +177,11 @@ $('stopBtn').onclick=()=>{stopFlag=true};
 
 async function run(items,zipMode){
   stopFlag=false;$('log').textContent='';$('zipOut').innerHTML='';busy(true);
-  const rows=[],zf=[];let seen=0,ok=0,skip=0,bad=0;
+  const rows=[],zf=[];let seen=0,ok=0,skip=0,bad=0,skipT=0;
   for await(const it of items){
     if(stopFlag){say('Stoppet af brugeren.');break}
-    if(/\.ots$/i.test(it.path)||($('onlyMedia').checked&&!MEDIA.test(it.path)))continue;
+    if(SKIPN.test(it.path))continue;
+    if($('onlyMedia').checked&&!MEDIA.test(it.path)){skipT++;rows.push([it.path,'','','','','sprunget over: filtype']);say('Sprunget over (filtype): '+it.path);continue}
     seen++;$('prog').textContent='Behandler fil nr. '+seen+': '+it.path;
     try{
       if(!zipMode&&await it.exists()){skip++;say('Sprunget over (har .ots): '+it.path);continue}
@@ -179,7 +194,7 @@ async function run(items,zipMode){
       await sleep(300);
     }catch(e){bad++;rows.push([it.path,'','','','','FEJL: '+err2txt(e)]);say('FEJL: '+it.path+' ('+err2txt(e)+')')}
   }
-  $('prog').textContent='Færdig: '+ok+' tidsstemplet, '+skip+' sprunget over, '+bad+' fejl.';
+  $('prog').textContent='Færdig: '+ok+' tidsstemplet, '+skip+' sprunget over, '+skipT+' sprunget over (filtype), '+bad+' fejl.';
   busy(false);
   return {rows,zf};
 }
@@ -251,7 +266,7 @@ $('fv').onchange=async e=>{
   const pairs=[],noOts=[],orphan=[];
   for(const p of map.keys()){
     if(/\.ots$/i.test(p)){if(!/(^|\/)_foreløbige\//.test(p)&&!map.has(p.slice(0,-4)))orphan.push(p);continue}
-    if(map.has(p+'.ots'))pairs.push(p);else if(MEDIA.test(p))noOts.push(p);
+    if(map.has(p+'.ots'))pairs.push(p);else if(!SKIPN.test(p))noOts.push(p);
   }
   const rows=[],cnt={bitcoin:0,'foreløbig':0,'matcher ikke':0,other:0,skip:0};let i=0;
   for(const p of pairs){
@@ -270,7 +285,7 @@ $('fv').onchange=async e=>{
   noOts.forEach(p=>{rows.push([p,'mangler .ots','','']);say3('Mangler .ots: '+p)});
   orphan.forEach(p=>{rows.push([p,'.ots uden original','','']);say3('.ots uden original: '+p)});
   $('prog3').textContent='';
-  show($('out3'),'Kontrolleret '+(i)+' af '+pairs.length+' filer med .ots: '+cnt.bitcoin+' med Bitcoin-attestation, '+cnt['foreløbig']+' foreløbige, '+cnt['matcher ikke']+' matcher ikke, '+(cnt.other+cnt.skip)+' ugyldige, fejlede eller sprunget over. Billeder og PDF uden .ots: '+noOts.length+'. .ots uden original: '+orphan.length+'. Attestationerne er ikke bekræftet mod Bitcoin her. Det sker på opentimestamps.org eller med ots verify.',cnt['matcher ikke']+cnt.other?'bad':'ok');
+  show($('out3'),'Kontrolleret '+(i)+' af '+pairs.length+' filer med .ots: '+cnt.bitcoin+' med Bitcoin-attestation, '+cnt['foreløbig']+' foreløbige, '+cnt['matcher ikke']+' matcher ikke, '+(cnt.other+cnt.skip)+' ugyldige, fejlede eller sprunget over. Filer uden .ots: '+noOts.length+'. .ots uden original: '+orphan.length+'. Attestationerne er ikke bekræftet mod Bitcoin her. Det sker på opentimestamps.org eller med ots verify.',cnt['matcher ikke']+cnt.other?'bad':'ok');
   const a=document.createElement('a');a.className='btn';a.textContent='Hent kontrollog (CSV)';
   a.href=URL.createObjectURL(new Blob([csv3(rows)],{type:'text/csv'}));a.download='kontrol-log-'+tsn()+'.csv';
   $('out3').appendChild(a);
@@ -412,6 +427,140 @@ $('upBtn').onclick=async()=>{
     if(!dry){try{await writeNew(workDir,await uniq(workDir,'opgradering-log-'+tsn()+'.csv'),new TextEncoder().encode(csv4(rows)))}catch(e){say('Kunne ikke gemme log i mappen: '+e.message)}}
   }
   ['wBtn','cBtn','upBtn'].forEach(i=>$(i).disabled=false);$('stop4').disabled=true;
+};
+
+/*PKG*/
+async function walkTS(o,p,msg,out){
+  for(;;){
+    let t=o[p++];if(t===undefined)throw new Error('uventet slut');
+    const more=t===0xff;if(more)t=o[p++];
+    if(t===0x00){const tag=hex(o.slice(p,p+8));p+=8;const [n,q]=rdVar(o,p);out.push({tag,data:o.slice(q,q+n),msg});p=q+n}
+    else{
+      let m2;
+      if(t===0xf0||t===0xf1){const [n,q]=rdVar(o,p),a=o.slice(q,q+n);p=q+n;m2=t===0xf0?cat(msg,a):cat(a,msg)}
+      else if(t===0x08)m2=await sha(msg);
+      else throw new Error('kan ikke beregne operation '+t);
+      p=await walkTS(o,p,m2,out);
+    }
+    if(!more)return p;
+  }
+}
+const blkCache=new Map();
+function getBlock(ht){
+  if(blkCache.has(ht))return blkCache.get(ht);
+  const get=async u=>{const ac=new AbortController(),t=setTimeout(()=>ac.abort(),20000);
+    try{const r=await fetch(u,{signal:ac.signal});if(!r.ok)throw new Error('HTTP '+r.status);return r}finally{clearTimeout(t)}};
+  const pr=(async()=>{
+    const hash=(await(await get('https://mempool.space/api/block-height/'+ht)).text()).trim();
+    if(!/^[0-9a-f]{64}$/.test(hash))throw new Error('uventet svar om blokhash');
+    const j=await(await get('https://mempool.space/api/block/'+hash)).json();
+    if(j.height!==ht||!/^[0-9a-f]{64}$/.test(j.merkle_root||''))throw new Error('uventet blokdata');
+    return {hash,time:j.timestamp,mr:j.merkle_root};
+  })();
+  blkCache.set(ht,pr);return pr;
+}
+const mrCheck=(msg,mr)=>hex(msg)===mr?'direkte':hex(msg.slice().reverse())===mr?'omvendt':null;
+const fmtT=ts=>({utc:new Date(ts*1000).toISOString().replace('T',' ').slice(0,19)+' UTC',dk:new Date(ts*1000).toLocaleString('da-DK',{timeZone:'Europe/Copenhagen'})});
+function bevisTxt(i){
+  const L=['BEVIS FOR TIDSSTEMPLING','English: The file named below existed no later than the Bitcoin block time stated here. Verify at opentimestamps.org with the .ots file and the original file.','',
+    'Fil: '+i.name,'Størrelse: '+i.size+' bytes','SHA-256: '+i.hash];
+  if(i.stamp)L.push('Tidsstempling oprettet (programmet): '+i.stamp.time+' via '+i.stamp.cal);
+  L.push('Bitcoin-blok: '+i.height);
+  if(i.blk){const t=fmtT(i.blk.time);L.push('Blokkens hash: '+i.blk.hash,'Blokkens tid (UTC): '+t.utc,'Blokkens tid (dansk tid): '+t.dk)}else L.push('Blokkens tid: ikke slået op');
+  L.push('Kontrol mod blokken (mempool.space): '+i.chk,'Pakke oprettet: '+new Date().toISOString(),'',
+    'Sådan kontrollerer du:','1. Gå til opentimestamps.org.',
+    '2. Under Stamp & Verify vælges først filen med endelsen .ots og derefter originalfilen. Filnavnene må gerne være ændret. Kun filens indhold tæller.',
+    '3. Der skal stå: Bitcoin block '+i.height+' attests existence as of ...','',
+    'Hvad beviset viser: Filen fandtes senest på blokkens tidspunkt og er uændret siden. Blokkens tid sættes af minerne og er kun nogenlunde præcis (timer, ikke minutter).',
+    'Hvad beviset ikke viser: At indholdet er ægte, eller hvem der har skabt det.');
+  return '\ufeff'+L.join('\r\n')+'\r\n';
+}
+function parseStampLog(txt){
+  const m=new Map();
+  for(const ln of txt.replace(/^\ufeff/,'').split(/\r?\n/).slice(1)){
+    const f=[...ln.matchAll(/"((?:[^"]|"")*)"/g)].map(x=>x[1].replace(/""/g,'"'));
+    if(f.length>=5&&f[2])m.set(f[2],{time:f[3],cal:f[4]});
+  }
+  return m;
+}
+async function readStampLogs(dir){
+  const m=new Map();
+  for await(const [nm,h] of dir.entries()){
+    if(h.kind==='file'&&/^tidsstempel-log-.*\.csv$/.test(nm)){
+      try{for(const [k,v] of parseStampLog(await(await h.getFile()).text()))if(!m.has(k)||m.get(k).time>v.time)m.set(k,v)}catch(e){}
+    }
+  }
+  return m;
+}
+async function makePackage(it,pkgRoot,logs,dry){
+  const old=await readB(it.dir,it.name+'.ots');
+  const wf=await(await it.dir.getFileHandle(it.name)).getFile();
+  if(wf.size>MAXB)throw new Error('over 1 GB');
+  const h=await sha(await wf.arrayBuffer());
+  if(hex(old.slice(33,65))!==hex(h))throw new Error('originalen matcher ikke .ots-filen');
+  const atts=[];await walkTS(old,65,h,atts);
+  const bt=atts.filter(a=>a.tag===BTCT);
+  if(!bt.length)return {state:'foreløbig'};
+  const height=rdVar(bt[0].data,0)[0];
+  let blk=null,chk='ikke udført';
+  try{
+    blk=await getBlock(height);
+    const m=mrCheck(bt[0].msg,blk.mr);
+    if(!m)throw new Error('MERKLE ROOT MATCHER IKKE');
+    chk='merkle root matcher blokken ('+m+' rækkefølge)';
+  }catch(e){
+    if(/^MERKLE/.test(e.message))throw new Error('beviset passer ikke til blokken (merkle root matcher ikke)');
+    blk=null;chk='ikke udført: '+err2txt(e);
+  }
+  const pn=it.path.replace(/\//g,'__');
+  if(await exists(pkgRoot,pn))return {state:'findes',height,blk,chk,pn};
+  if(dry)return {state:'ville',height,blk,chk,pn};
+  const pk=await pkgRoot.getDirectoryHandle(pn,{create:true});
+  await writeNew(pk,it.name,wf);
+  const cf=await(await pk.getFileHandle(it.name)).getFile();
+  if(hex(await sha(await cf.arrayBuffer()))!==hex(h))throw new Error('kopien af originalen kunne ikke bekræftes (pakken er ufuldstændig: '+pn+')');
+  await writeNew(pk,it.name+'.ots',old);
+  await writeNew(pk,'BEVIS.txt',new TextEncoder().encode(bevisTxt({name:it.name,size:wf.size,hash:hex(h),stamp:logs.get(hex(h)),height,blk,chk})));
+  return {state:'oprettet',height,blk,chk,pn};
+}
+/*ENDPKG*/
+const csv5=rs=>'\ufeff'+['sti;status;blok;blokkens tid (UTC);kontrol mod blok;pakkemappe;bemærkning',...rs.map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(';'))].join('\r\n');
+let pwDir=null,ppDir=null,stop5=false;
+if(!window.showDirectoryPicker)$('c5').style.display='none';
+const rdy5=()=>{$('pkBtn').disabled=!(pwDir&&ppDir)};
+$('pwBtn').onclick=async()=>{try{pwDir=await showDirectoryPicker({mode:'read'});$('pwName').textContent=pwDir.name;rdy5()}catch(e){}};
+$('ppBtn').onclick=async()=>{try{ppDir=await showDirectoryPicker({mode:'readwrite'});$('ppName').textContent=ppDir.name;rdy5()}catch(e){}};
+$('stop5').onclick=()=>{stop5=true};
+$('pkBtn').onclick=async()=>{
+  stop5=false;const dry=$('dry5').checked;$('log5').textContent='';$('out5').innerHTML='';
+  const say=t=>{$('log5').textContent+=t+'\n';$('log5').scrollTop=$('log5').scrollHeight};
+  try{if(await pwDir.isSameEntry(ppDir)){show($('out5'),'Pakkemappen skal være en anden mappe end arbejdsmappen.','bad');return}}catch(e){}
+  ['pwBtn','ppBtn','pkBtn'].forEach(i=>$(i).disabled=true);$('stop5').disabled=false;
+  const rows=[],cnt={ok:0,pend:0,ex:0,bad:0},items=[];let i=0;
+  let logs=new Map();try{logs=await readStampLogs(pwDir)}catch(e){}
+  try{await collect(pwDir,'',items)}catch(e){say('Kunne ikke læse mappen: '+e.message)}
+  for(const it of items){
+    if(stop5){say('Stoppet af brugeren.');break}
+    i++;$('prog5').textContent='Fil '+i+' af '+items.length+': '+it.path;
+    let row=[it.path,'','','','','',''];
+    try{
+      const r=await makePackage(it,ppDir,logs,dry);
+      if(r.state==='foreløbig'){cnt.pend++;row[1]='stadig foreløbig';say('Stadig foreløbig (ingen pakke): '+it.path)}
+      else if(r.state==='findes'){cnt.ex++;row=[it.path,'pakke findes allerede',r.height,r.blk?fmtT(r.blk.time).utc:'',r.chk,r.pn,''];say('Pakke findes allerede: '+r.pn)}
+      else{cnt.ok++;const tt=r.blk?fmtT(r.blk.time).utc:'';
+        row=[it.path,dry?'ville oprette pakke':'pakke oprettet',r.height,tt,r.chk,r.pn,''];
+        say((dry?'VILLE OPRETTE: ':'OPRETTET: ')+r.pn+' (blok '+r.height+(tt?', '+tt:'')+'; '+r.chk+')')}
+    }catch(e){cnt.bad++;row[1]='afvist eller fejl';row[6]=err2txt(e);say('AFVIST ELLER FEJL: '+it.path+' ('+err2txt(e)+')')}
+    rows.push(row);await sleep(200);
+  }
+  $('prog5').textContent='';
+  show($('out5'),(dry?'Prøvekørsel. ':'')+i+' filer behandlet: '+cnt.ok+(dry?' kunne få en pakke':' pakker oprettet')+', '+cnt.ex+' fandtes allerede, '+cnt.pend+' stadig foreløbige, '+cnt.bad+' afvist eller fejl.'+(dry?' Fjern fluebenet og kør igen for at oprette pakkerne.':''),cnt.bad?'bad':'ok');
+  if(rows.length){
+    const a=document.createElement('a');a.className='btn';a.textContent='Hent log (CSV)';
+    a.href=URL.createObjectURL(new Blob([csv5(rows)],{type:'text/csv'}));a.download='pakke-log-'+tsn()+'.csv';$('out5').appendChild(a);
+    if(!dry){try{await writeNew(ppDir,await uniq(ppDir,'pakke-log-'+tsn()+'.csv'),new TextEncoder().encode(csv5(rows)))}catch(e){say('Kunne ikke gemme log: '+e.message)}}
+  }
+  ['pwBtn','ppBtn','pkBtn'].forEach(i=>$(i).disabled=false);$('stop5').disabled=true;
 };
 </script>
 </body>
