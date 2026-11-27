@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Foto-tidsstempel v5.1 (prototype)</title>
+<title>Foto-tidsstempel v5.3 (prototype)</title>
 <style>
 :root{--bg:#fff;--fg:#1c1c1e;--mut:#6b7280;--card:#f2f4f8;--acc:#1f3a5f;--ok:#17653a;--bad:#a12a2a}
 @media (prefers-color-scheme:dark){:root{--bg:#111418;--fg:#eceff4;--mut:#9aa4b2;--card:#1c222b;--acc:#7fb0ff;--ok:#6fd49a;--bad:#ff8a8a}}
@@ -21,7 +21,7 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 </style>
 </head>
 <body>
-<h1>Foto-tidsstempel v5.1</h1>
+<h1>Foto-tidsstempel v5.3</h1>
 <p class="mut">Prototype. Filerne forlader aldrig enheden. Kun hashen (et fingeraftryk) sendes til en OpenTimestamps-kalenderserver.</p>
 
 <div class="card">
@@ -81,10 +81,12 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 
 <div class="card" id="c5">
 <h2>5. Bevispakker (PC)</h2>
-<p class="mut">Laver en mappe pr. opgraderet fil i en tredje mappe: en kontrolleret kopi af originalen, den opgraderede .ots og BEVIS.txt med blokhøjde og tid (slået op på mempool.space). Programmet kontrollerer også, at beviset passer til blokkens merkle root. Intet flyttes eller overskrives.</p>
+<p class="mut">Laver en mappe pr. opgraderet fil i en tredje mappe: en kontrolleret kopi af originalen, den opgraderede .ots og BEVIS.txt med blokhøjde og tid (slået op på mempool.space eller blockstream.info). Programmet kontrollerer også, at beviset passer til blokkens merkle root. Intet flyttes eller overskrives.</p>
 <button id="pwBtn">Vælg arbejdsmappe</button> <span id="pwName" class="mut"></span><br>
 <button id="ppBtn">Vælg pakkemappe</button> <span id="ppName" class="mut"></span><br>
 <label><input type="checkbox" id="dry5" checked> Prøvekørsel (skriv ingen filer)</label><br>
+<label><input type="checkbox" id="noLk"> Opret pakker også uden bloktid (ikke anbefalet)</label><br>
+<button id="lkBtn">Test blokopslag</button>
 <button id="pkBtn" disabled>Lav pakker</button>
 <button id="stop5" disabled>Stop</button>
 <div id="prog5" class="mut"></div>
@@ -452,19 +454,26 @@ async function walkTS(o,p,msg,out){
     if(!more)return p;
   }
 }
+const EXPL=[['mempool.space','https://mempool.space/api'],['blockstream.info','https://blockstream.info/api']];
 const blkCache=new Map();
-function getBlock(ht){
-  if(blkCache.has(ht))return blkCache.get(ht);
-  const get=async u=>{const ac=new AbortController(),t=setTimeout(()=>ac.abort(),20000);
+const lkErr=e=>e.name==='AbortError'?'tidsgrænse overskredet (15 s)':err2txt(e);
+async function lookup(base,ht){
+  const get=async u=>{const ac=new AbortController(),t=setTimeout(()=>ac.abort(),15000);
     try{const r=await fetch(u,{signal:ac.signal});if(!r.ok)throw new Error('HTTP '+r.status);return r}finally{clearTimeout(t)}};
-  const pr=(async()=>{
-    const hash=(await(await get('https://mempool.space/api/block-height/'+ht)).text()).trim();
-    if(!/^[0-9a-f]{64}$/.test(hash))throw new Error('uventet svar om blokhash');
-    const j=await(await get('https://mempool.space/api/block/'+hash)).json();
-    if(j.height!==ht||!/^[0-9a-f]{64}$/.test(j.merkle_root||''))throw new Error('uventet blokdata');
-    return {hash,time:j.timestamp,mr:j.merkle_root};
-  })();
-  blkCache.set(ht,pr);return pr;
+  const hash=(await(await get(base+'/block-height/'+ht)).text()).trim();
+  if(!/^[0-9a-f]{64}$/.test(hash))throw new Error('uventet svar om blokhash');
+  const j=await(await get(base+'/block/'+hash)).json();
+  if(j.height!==ht||!/^[0-9a-f]{64}$/.test(j.merkle_root||''))throw new Error('uventet blokdata');
+  return {hash,time:j.timestamp,mr:j.merkle_root};
+}
+async function getBlock(ht){
+  if(blkCache.has(ht))return blkCache.get(ht);
+  const errs=[];
+  for(const [nm,base] of EXPL){
+    try{const b=await lookup(base,ht);b.src=nm;blkCache.set(ht,b);return b}
+    catch(e){errs.push(nm+': '+lkErr(e))}
+  }
+  throw new Error(errs.join('; '));
 }
 const mrCheck=(msg,mr)=>hex(msg)===mr?'direkte':hex(msg.slice().reverse())===mr?'omvendt':null;
 const fmtT=ts=>({utc:new Date(ts*1000).toISOString().replace('T',' ').slice(0,19)+' UTC',dk:new Date(ts*1000).toLocaleString('da-DK',{timeZone:'Europe/Copenhagen'})});
@@ -472,9 +481,10 @@ function bevisTxt(i){
   const L=['BEVIS FOR TIDSSTEMPLING','English: The file named below existed no later than the Bitcoin block time stated here. Verify at opentimestamps.org with the .ots file and the original file.','',
     'Fil: '+i.name,'Størrelse: '+i.size+' bytes','SHA-256: '+i.hash];
   if(i.stamp)L.push('Tidsstempling oprettet (programmet): '+i.stamp.time+' via '+i.stamp.cal);
+  if(i.gap)L.push('Tidsforløb: '+i.gap);
   L.push('Bitcoin-blok: '+i.height);
   if(i.blk){const t=fmtT(i.blk.time);L.push('Blokkens hash: '+i.blk.hash,'Blokkens tid (UTC): '+t.utc,'Blokkens tid (dansk tid): '+t.dk)}else L.push('Blokkens tid: ikke slået op');
-  L.push('Kontrol mod blokken (mempool.space): '+i.chk,'Pakke oprettet: '+new Date().toISOString(),'',
+  L.push('Kontrol mod blokken: '+i.chk,'Pakke oprettet: '+new Date().toISOString(),'',
     'Sådan kontrollerer du:','1. Gå til opentimestamps.org.',
     '2. Under Stamp & Verify vælges først filen med endelsen .ots og derefter originalfilen. Filnavnene må gerne være ændret. Kun filens indhold tæller.',
     '3. Der skal stå: Bitcoin block '+i.height+' attests existence as of ...','',
@@ -499,7 +509,7 @@ async function readStampLogs(dir){
   }
   return m;
 }
-async function makePackage(it,pkgRoot,logs,dry){
+async function makePackage(it,pkgRoot,logs,dry,allowNo){
   const old=await readB(it.dir,it.name+'.ots');
   const wf=await(await it.dir.getFileHandle(it.name)).getFile();
   if(wf.size>MAXB)throw new Error('over 1 GB');
@@ -509,26 +519,33 @@ async function makePackage(it,pkgRoot,logs,dry){
   const bt=atts.filter(a=>a.tag===BTCT);
   if(!bt.length)return {state:'foreløbig'};
   const height=rdVar(bt[0].data,0)[0];
-  let blk=null,chk='ikke udført';
+  const pn=it.path.replace(/\//g,'__');
+  if(await exists(pkgRoot,pn))return {state:'findes',height,blk:null,chk:'',pn,gap:''};
+  let blk=null,chk='ikke udført',gap='';
   try{
     blk=await getBlock(height);
     const m=mrCheck(bt[0].msg,blk.mr);
-    if(!m)throw new Error('MERKLE ROOT MATCHER IKKE');
-    chk='merkle root matcher blokken ('+m+' rækkefølge)';
+    if(!m){const fe=new Error('beviset passer ikke til blokken (merkle root matcher ikke)');fe.fatal=true;throw fe}
+    chk='merkle root matcher blokken ('+m+' rækkefølge, kilde: '+blk.src+')';
+    const st=logs.get(hex(h));
+    if(st){
+      const mins=Math.round((blk.time*1000-Date.parse(st.time))/60000);
+      if(mins<-120){const fe=new Error('blokken er fundet '+(-mins)+' minutter FØR tidsstemplingen, så beviset kan ikke høre til denne stempling');fe.fatal=true;throw fe}
+      gap=mins>=0?'blokken er fundet '+Math.floor(mins/60)+' timer og '+(mins%60)+' minutter efter tidsstemplingen':'blokkens tid ligger '+(-mins)+' minutter før tidsstemplingen (inden for tolerancen for blokkens tidsstempel)';
+    }
   }catch(e){
-    if(/^MERKLE/.test(e.message))throw new Error('beviset passer ikke til blokken (merkle root matcher ikke)');
+    if(e.fatal)throw e;
     blk=null;chk='ikke udført: '+err2txt(e);
   }
-  const pn=it.path.replace(/\//g,'__');
-  if(await exists(pkgRoot,pn))return {state:'findes',height,blk,chk,pn};
-  if(dry)return {state:'ville',height,blk,chk,pn};
+  if(!blk&&!allowNo)return {state:'opslag',chk};
+  if(dry)return {state:'ville',height,blk,chk,pn,gap};
   const pk=await pkgRoot.getDirectoryHandle(pn,{create:true});
   await writeNew(pk,it.name,wf);
   const cf=await(await pk.getFileHandle(it.name)).getFile();
   if(hex(await sha(await cf.arrayBuffer()))!==hex(h))throw new Error('kopien af originalen kunne ikke bekræftes (pakken er ufuldstændig: '+pn+')');
   await writeNew(pk,it.name+'.ots',old);
-  await writeNew(pk,'BEVIS.txt',new TextEncoder().encode(bevisTxt({name:it.name,size:wf.size,hash:hex(h),stamp:logs.get(hex(h)),height,blk,chk})));
-  return {state:'oprettet',height,blk,chk,pn};
+  await writeNew(pk,'BEVIS.txt',new TextEncoder().encode(bevisTxt({name:it.name,size:wf.size,hash:hex(h),stamp:logs.get(hex(h)),height,blk,chk,gap})));
+  return {state:'oprettet',height,blk,chk,pn,gap};
 }
 /*ENDPKG*/
 const csv5=rs=>'\ufeff'+['sti;status;blok;blokkens tid (UTC);kontrol mod blok;pakkemappe;bemærkning',...rs.map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(';'))].join('\r\n');
@@ -537,13 +554,22 @@ if(!window.showDirectoryPicker)$('c5').style.display='none';
 const rdy5=()=>{$('pkBtn').disabled=!(pwDir&&ppDir)};
 $('pwBtn').onclick=async()=>{try{pwDir=await showDirectoryPicker({mode:'read'});$('pwName').textContent=pwDir.name;rdy5()}catch(e){}};
 $('ppBtn').onclick=async()=>{try{ppDir=await showDirectoryPicker({mode:'readwrite'});$('ppName').textContent=ppDir.name;rdy5()}catch(e){}};
+$('lkBtn').onclick=async()=>{
+  show($('out5'),'Tester blokopslag (blok 977673)...');const res=[];
+  for(const [nm,base] of EXPL){
+    const t0=performance.now();
+    try{const b=await lookup(base,977673);res.push(nm+': OK, blokken fundet '+fmtT(b.time).dk+' ('+Math.round(performance.now()-t0)+' ms)')}
+    catch(e){res.push(nm+': FEJL, '+lkErr(e)+' ('+Math.round(performance.now()-t0)+' ms)')}
+  }
+  show($('out5'),res.join(' | '),res.some(x=>/: OK/.test(x))?'ok':'bad');
+};
 $('stop5').onclick=()=>{stop5=true};
 $('pkBtn').onclick=async()=>{
   stop5=false;const dry=$('dry5').checked;$('log5').textContent='';$('out5').innerHTML='';
   const say=t=>{$('log5').textContent+=t+'\n';$('log5').scrollTop=$('log5').scrollHeight};
   try{if(await pwDir.isSameEntry(ppDir)){show($('out5'),'Pakkemappen skal være en anden mappe end arbejdsmappen.','bad');return}}catch(e){}
-  ['pwBtn','ppBtn','pkBtn'].forEach(i=>$(i).disabled=true);$('stop5').disabled=false;
-  const rows=[],cnt={ok:0,pend:0,ex:0,bad:0},items=[];let i=0;
+  ['pwBtn','ppBtn','pkBtn','lkBtn'].forEach(i=>$(i).disabled=true);$('stop5').disabled=false;
+  const rows=[],cnt={ok:0,pend:0,ex:0,bad:0,lk:0},items=[];let i=0;
   let logs=new Map();try{logs=await readStampLogs(pwDir)}catch(e){}
   try{await collect(pwDir,'',items)}catch(e){say('Kunne ikke læse mappen: '+e.message)}
   for(const it of items){
@@ -551,23 +577,24 @@ $('pkBtn').onclick=async()=>{
     i++;$('prog5').textContent='Fil '+i+' af '+items.length+': '+it.path;
     let row=[it.path,'','','','','',''];
     try{
-      const r=await makePackage(it,ppDir,logs,dry);
+      const r=await makePackage(it,ppDir,logs,dry,$('noLk').checked);
       if(r.state==='foreløbig'){cnt.pend++;row[1]='stadig foreløbig';say('Stadig foreløbig (ingen pakke): '+it.path)}
-      else if(r.state==='findes'){cnt.ex++;row=[it.path,'pakke findes allerede',r.height,r.blk?fmtT(r.blk.time).utc:'',r.chk,r.pn,''];say('Pakke findes allerede: '+r.pn)}
+      else if(r.state==='opslag'){cnt.lk++;row[1]='blokopslag mislykkedes, ingen pakke';row[6]=r.chk;say('BLOKOPSLAG MISLYKKEDES (ingen pakke): '+it.path+' ('+r.chk+')')}
+      else if(r.state==='findes'){cnt.ex++;row=[it.path,'pakke findes allerede',r.height,r.blk?fmtT(r.blk.time).utc:'',r.chk,r.pn,r.gap||''];say('Pakke findes allerede: '+r.pn)}
       else{cnt.ok++;const tt=r.blk?fmtT(r.blk.time).utc:'';
-        row=[it.path,dry?'ville oprette pakke':'pakke oprettet',r.height,tt,r.chk,r.pn,''];
+        row=[it.path,dry?'ville oprette pakke':'pakke oprettet',r.height,tt,r.chk,r.pn,r.gap||''];
         say((dry?'VILLE OPRETTE: ':'OPRETTET: ')+r.pn+' (blok '+r.height+(tt?', '+tt:'')+'; '+r.chk+')')}
     }catch(e){cnt.bad++;row[1]='afvist eller fejl';row[6]=err2txt(e);say('AFVIST ELLER FEJL: '+it.path+' ('+err2txt(e)+')')}
     rows.push(row);await sleep(200);
   }
   $('prog5').textContent='';
-  show($('out5'),(dry?'Prøvekørsel. ':'')+i+' filer behandlet: '+cnt.ok+(dry?' kunne få en pakke':' pakker oprettet')+', '+cnt.ex+' fandtes allerede, '+cnt.pend+' stadig foreløbige, '+cnt.bad+' afvist eller fejl.'+(dry?' Fjern fluebenet og kør igen for at oprette pakkerne.':''),cnt.bad?'bad':'ok');
+  show($('out5'),(dry?'Prøvekørsel. ':'')+i+' filer behandlet: '+cnt.ok+(dry?' kunne få en pakke':' pakker oprettet')+', '+cnt.ex+' fandtes allerede, '+cnt.pend+' stadig foreløbige, '+cnt.lk+' uden blokopslag (ingen pakke), '+cnt.bad+' afvist eller fejl.'+(dry?' Fjern fluebenet og kør igen for at oprette pakkerne.':''),cnt.bad?'bad':'ok');
   if(rows.length){
     const a=document.createElement('a');a.className='btn';a.textContent='Hent log (CSV)';
     a.href=URL.createObjectURL(new Blob([csv5(rows)],{type:'text/csv'}));a.download='pakke-log-'+tsn()+'.csv';$('out5').appendChild(a);
     if(!dry){try{await writeNew(ppDir,await uniq(ppDir,'pakke-log-'+tsn()+'.csv'),new TextEncoder().encode(csv5(rows)))}catch(e){say('Kunne ikke gemme log: '+e.message)}}
   }
-  ['pwBtn','ppBtn','pkBtn'].forEach(i=>$(i).disabled=false);$('stop5').disabled=true;
+  ['pwBtn','ppBtn','pkBtn','lkBtn'].forEach(i=>$(i).disabled=false);$('stop5').disabled=true;
 };
 </script>
 </body>
