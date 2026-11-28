@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Foto-tidsstempel v5.3 (prototype)</title>
+<title>Foto-tidsstempel v5.4 (prototype)</title>
 <style>
 :root{--bg:#fff;--fg:#1c1c1e;--mut:#6b7280;--card:#f2f4f8;--acc:#1f3a5f;--ok:#17653a;--bad:#a12a2a}
 @media (prefers-color-scheme:dark){:root{--bg:#111418;--fg:#eceff4;--mut:#9aa4b2;--card:#1c222b;--acc:#7fb0ff;--ok:#6fd49a;--bad:#ff8a8a}}
@@ -21,7 +21,7 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 </style>
 </head>
 <body>
-<h1>Foto-tidsstempel v5.3</h1>
+<h1>Foto-tidsstempel v5.4</h1>
 <p class="mut">Prototype. Filerne forlader aldrig enheden. Kun hashen (et fingeraftryk) sendes til en OpenTimestamps-kalenderserver.</p>
 
 <div class="card">
@@ -68,7 +68,7 @@ pre{max-height:220px;overflow:auto;font-size:.78rem;white-space:pre-wrap;margin:
 
 <div class="card" id="c4">
 <h2>4. Opgradér mappe til Bitcoin (PC)</h2>
-<p class="mut">Spørger kalenderserveren om hver foreløbig .ots-fil og gemmer den færdige som filnavn.ots. Den foreløbige flyttes til undermappen _foreløbige. Intet overskrives. Kræver en Chromium-baseret browser.</p>
+<p class="mut">Spørger kalenderserveren om hver foreløbig .ots-fil og gemmer den færdige som filnavn.ots. Den foreløbige flyttes til undermappen _foreløbige. Intet overskrives. Er filen allerede opgraderet, kopieres den opgraderede .ots stadig til kopimappen, hvis den mangler dér. Kræver en Chromium-baseret browser.</p>
 <button id="wBtn">Vælg arbejdsmappe</button> <span id="wName" class="mut"></span><br>
 <button id="cBtn">Vælg kopimappe (valgfri)</button> <span id="cName" class="mut"></span><br>
 <label><input type="checkbox" id="dry" checked> Prøvekørsel (skriv ingen filer)</label><br>
@@ -389,6 +389,22 @@ async function collect(d,p,out){
   for(const [nm,h] of subs)await collect(h,p+nm+'/',out);
 }
 async function dirAt(root,path){let d=root;for(const s of path.split('/').slice(0,-1))d=await d.getDirectoryHandle(s);return d}
+/* Sørger for, at kopimappen har den opgraderede .ots ved siden af en identisk original. Overskriver aldrig. */
+async function syncCopy(it,wb,h,dry){
+  let cd=copyDir;
+  for(const s of it.path.split('/').slice(0,-1)){try{cd=await cd.getDirectoryHandle(s)}catch(e){return 'undermappen '+s+' findes ikke i kopimappen'}}
+  let cf;try{cf=await(await cd.getFileHandle(it.name)).getFile()}catch(e){return 'filen findes ikke i kopimappen (originalerne skal ligge direkte i den valgte kopimappe med samme navne)'}
+  if(hex(await sha(await cf.arrayBuffer()))!==hex(h))return 'kopien af originalen har andet indhold, ingen .ots skrevet';
+  const nm=it.name+'.ots';
+  if(await exists(cd,nm)){
+    const cb=await readB(cd,nm);
+    if(hex(cb)===hex(wb))return 'kopimappen er ajour';
+    let bt=false;try{bt=(await chain(cb)).btc===true}catch(e){}
+    if(bt)return 'kopimappen har en anden Bitcoin-.ots, uændret';
+  }
+  if(dry)return 'ville skrive i kopimappen';
+  try{await replaceOts(cd,nm,wb);return 'skrevet i kopimappen'}catch(e){return 'kopimappe: '+err2txt(e)}
+}
 const csv4=rs=>'\ufeff'+['sti;status;blok;størrelse før og efter;kopimappe;bemærkning',...rs.map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(';'))].join('\r\n');
 let workDir=null,copyDir=null,stop4=false;
 if(!window.showDirectoryPicker)$('c4').style.display='none';
@@ -412,16 +428,11 @@ $('upBtn').onclick=async()=>{
       const h=await sha(await wf.arrayBuffer());
       if(hex(old.slice(33,65))!==hex(h))throw new Error('originalen matcher ikke .ots-filen');
       const r=await upgradeOts(old);
-      if(r.state==='already'){cnt.already++;row[1]='allerede opgraderet';say('Allerede opgraderet: '+it.path)}
+      if(r.state==='already'){cnt.already++;const cm=copyDir?await syncCopy(it,old,h,dry):'';row=[it.path,'allerede opgraderet','','',cm,''];say('Allerede opgraderet: '+it.path+(cm?' ['+cm+']':''))}
       else if(r.state==='pending'){cnt.pend++;const pz=r.presumed?' (formodet: serveren svarer, men browseren må ikke læse svaret)':'';row[1]='stadig foreløbig'+(r.presumed?' (formodet)':'');say('Stadig foreløbig'+pz+': '+it.path)}
       else{
-        let cd=null,cm='';
-        if(copyDir){try{cd=await dirAt(copyDir,it.path);const cf=await(await cd.getFileHandle(it.name)).getFile();
-          if(hex(await sha(await cf.arrayBuffer()))!==hex(h)){cd=null;cm='kopien afviger, ingen .ots skrevet dér'}}
-          catch(e){cd=null;cm='findes ikke i kopimappen'}}
-        if(dry){if(cd)cm='ville skrive i kopimappen'}
-        else{await replaceOts(it.dir,it.name+'.ots',r.bytes);
-          if(cd){try{await replaceOts(cd,it.name+'.ots',r.bytes);cm='skrevet i kopimappen'}catch(e){cm='kopimappe: '+e.message}}}
+        if(!dry)await replaceOts(it.dir,it.name+'.ots',r.bytes);
+        const cm=copyDir?await syncCopy(it,r.bytes,h,dry):'';
         cnt.done++;row=[it.path,dry?'ville opgradere':'opgraderet',r.block,old.length+' til '+r.bytes.length,cm,''];
         say((dry?'VILLE OPGRADERE':'OPGRADERET')+' (blok '+r.block+'): '+it.path+(cm?' ['+cm+']':''));
       }
